@@ -1,0 +1,30 @@
+{
+  "name": "bid-calculator",
+  "version": "1.0.0",
+  "description": "입찰 시뮬레이션 계산기",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^31.0.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.gunhwa.bid-calculator",
+    "productName": "입찰 시뮬레이션 계산기",
+    "files": [
+      "index.html",
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+       "icon": "icon.ico"
+    }
+  }
+}

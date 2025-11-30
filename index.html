@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta http-equiv="Content-Language" content="ko" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>협상계약 투찰 시뮬레이션(협상계약 표준산식)</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 (생산용, UMD) & ReactDOM 18 -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel 7 Standalone (for inline JSX) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* 글로벌 폰트: KoPub 돋움체 우선, 미설치 시 돋움/대체 폰트 사용 */
+    :root { --app-font: "KoPub Dotum", "KoPubWorldDotum", "돋움", Dotum, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+    html, body { font-family: var(--app-font); }
+    /* 숫자 컬럼은 기존처럼 고정폭 폰트 유지 */
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+    @media print {
+      @page { size: A4 portrait; margin: 12mm; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      /* 인쇄 시 숨김 클래스 */
+      .no-print { display: none !important; }
+      .print-hide { display: none !important; }
+      /* 표의 6번째 열(추가/삭제 버튼) 완전 숨김 */
+      .hide-col-6 col:nth-child(6),
+      .hide-col-6 th:nth-child(6),
+      .hide-col-6 td:nth-child(6) { display: none !important; }
+      header, section { break-inside: avoid; }
+      
+    }
+    
+      
+    }
+  </style>
+</head>
+<body class="bg-white text-gray-900">
+  
+  <div id="root"></div>
+  <div id="global-error-box" class="hidden m-4 p-3 rounded-lg border border-red-300 bg-red-50 text-red-700 text-sm"></div>
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // === 유틸 ===
+    const genId = () => (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'id_' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+
+    function parseNumLoose(v) {
+      if (!v && v !== 0) return NaN;
+      const n = Number(String(v).replace(/[^\d.-]/g, ""));
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    function fmt(v, digits) {
+      if (!Number.isFinite(v)) return "-";
+      const f = Math.pow(10, digits);
+      return (Math.round(v * f) / f).toFixed(digits);
+    }
+
+    // === 표준 산식 ===
+    // 주2)
+    // ① 입찰가격 B >= 0.8E : 점수 = W * (L / B)
+    // ② (하한율 H)·E <= B < 0.8E : 점수 = [W * (L / (0.8E))] + [ 2 * ( (0.8E - B) / (0.8E - H*E) ) ]
+    // (E=예정가격, L=최저유효입찰가, B=해당입찰가)
+    function calculateHybridScore(bid, lowestValidBid, estimate, priceWeight, floorRate, breakpointRate) {
+      if (![bid, estimate, priceWeight, floorRate, breakpointRate].every(Number.isFinite) || estimate <= 0) {
+        return NaN;
+      }
+      // 구성 유효성: 하한율 < 분기점
+      if (!(floorRate < breakpointRate)) return NaN;
+
+      const bidRate = (bid / estimate) * 100;
+      const floorPrice = estimate * (floorRate / 100);
+      const breakpointPrice = estimate * (breakpointRate / 100);
+
+      if (bidRate < floorRate) return 0; // 하한 미만 0점
+      if (!Number.isFinite(lowestValidBid)) return NaN; // 유효 최저가 필요
+
+      let score = NaN;
+      // ① 분기점 이상
+      if (bid >= breakpointPrice) {
+        score = priceWeight * (lowestValidBid / bid);
+      }
+      // ② 분기점 미만(하한 이상)
+      else if (bid >= floorPrice && bid < breakpointPrice) {
+        const baseScore = priceWeight * (lowestValidBid / breakpointPrice);
+        const bonusDen = (breakpointPrice - floorPrice);
+        if (bonusDen <= 0) return NaN;
+        const bonus = 2 * (breakpointPrice - bid) / bonusDen;
+        score = baseScore + bonus;
+      }
+      // 최고점 보정: 어떤 경우에도 배점 한도(priceWeight)를 넘지 않도록 캡
+      if (Number.isFinite(score)) {
+        return Math.min(score, priceWeight);
+      }
+      return NaN;
+    }
+
+    // 캡 적용 전 원점수 계산 (정규화용)
+    function calculateHybridScoreRaw(bid, lowestValidBid, estimate, priceWeight, floorRate, breakpointRate) {
+      if (![bid, estimate, priceWeight, floorRate, breakpointRate].every(Number.isFinite) || estimate <= 0) {
+        return NaN;
+      }
+      if (!(floorRate < breakpointRate)) return NaN;
+
+      const bidRate = (bid / estimate) * 100;
+      const floorPrice = estimate * (floorRate / 100);
+      const breakpointPrice = estimate * (breakpointRate / 100);
+
+      if (bidRate < floorRate) return 0;
+      if (!Number.isFinite(lowestValidBid)) return NaN;
+
+      if (bid >= breakpointPrice) {
+        return priceWeight * (lowestValidBid / bid);
+      }
+      if (bid >= floorPrice && bid < breakpointPrice) {
+        const baseScore = priceWeight * (lowestValidBid / breakpointPrice);
+        const bonusDen = (breakpointPrice - floorPrice);
+        if (bonusDen <= 0) return NaN;
+        const bonus = 2 * (breakpointPrice - bid) / bonusDen;
+        return baseScore + bonus;
+      }
+      return NaN;
+    }
+
+    // === 컴포넌트 ===
+    function BidSimulator() {
+      // 기본값: 배점 10점, 하한 70%, 분기점 80%(고정)
+      const [priceWeight, setPriceWeight] = useState(10);
+      // 배점(기술:가격) 비율 선택 → 가격배점(W) 자동 계산 (price = 오른쪽 비율 × 10)
+      const [ratio, setRatio] = useState('9:1');
+      useEffect(() => {
+        try {
+          const parts = String(ratio).split(':');
+          const pricePart = Number(parts[1]);
+          if (Number.isFinite(pricePart)) {
+            setPriceWeight(pricePart * 10);
+          }
+        } catch (_) {}
+      }, [ratio]);
+      const [estimate, setEstimate] = useState("");
+      // 예정가격 입력 콤마 자동 삽입 (Intl.NumberFormat 사용)
+      const handleEstimateChange = (e) => {
+        const el = e.target;
+        // 숫자만 남김
+        const digits = (el.value || "").replace(/[^0-9]/g, "");
+        if (!digits) { setEstimate(""); return; }
+        // 포맷 적용
+        let formatted = digits;
+        try { formatted = new Intl.NumberFormat('ko-KR').format(parseInt(digits, 10)); } catch (_) {}
+        setEstimate(formatted);
+        // 캐럿 보정: 가능하면 끝쪽 유지
+        const posFromEnd = (el.value.length - el.selectionEnd);
+        requestAnimationFrame(() => {
+          try {
+            const newPos = Math.max(0, formatted.length - posFromEnd);
+            el.setSelectionRange(newPos, newPos);
+          } catch (_) {}
+        });
+      };
+      const [floorRate, setFloorRate] = useState(70);
+      const breakpointRate = 80;
+
+      // 점수처리 모드: 'cap_all' | 'normalize' (기본: normalize)
+      const SCORING_MODES = { CAP_ALL: 'cap_all', NORMALIZE: 'normalize' };
+      const [scoringMode, setScoringMode] = useState(SCORING_MODES.NORMALIZE);
+
+      const [roundDigits, setRoundDigits] = useState(3);
+      const [parties, setParties] = useState([
+        { id: genId(), name: "건 화", bidRate: "" },
+        { id: genId(), name: "경쟁1", bidRate: "" },
+      ]);
+
+      // ▶ 누락되어 "Script error"를 유발하던 계산 캐시(중요 수정)
+      const estimateNum = useMemo(() => parseNumLoose(estimate), [estimate]);
+      const floorRateNum = useMemo(() => parseNumLoose(floorRate), [floorRate]);
+      const breakpointRateNum = useMemo(() => parseNumLoose(breakpointRate), [breakpointRate]);
+
+      // 인쇄: 일부 환경에서 window.print()가 막히는 경우 새 창으로 복사 후 인쇄
+      const doPrint = React.useCallback(() => {
+        // 1차 시도: 현재 창에서 직접 인쇄
+        try { window.focus(); window.print(); } catch (_) {}
+        // 2차 폴백: 새 창으로 간이 스타일과 함께 렌더 후 인쇄
+        setTimeout(() => {
+          const host = document.querySelector('#root');
+          const inner = host ? host.innerHTML : '';
+          const doc = `<!doctype html><html lang="ko"><head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>인쇄</title>
+            <style>
+              @page { size: A4 portrait; margin: 12mm; }
+              html, body { font-family: 'KoPub Dotum','KoPubWorldDotum','돋움',Dotum,'Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif; color:#000; }
+              .no-print { display: none !important; }
+              input, select, button { color:#000 !important; border:none !important; background:transparent !important; padding:0 !important; box-shadow:none !important; }
+              h1{ font-size:18px; margin:0 0 8px; }
+              h2{ font-size:15px; margin:16px 0 8px; }
+              p,li,span,div{ font-size:12px; }
+              table{ width:100%; border-collapse:collapse; font-size:12px; }
+              thead th{ background:#f5f5f5; }
+              table,th,td{ border:2px solid #000; padding:6px; text-align:center; }
+              tr, td, th { page-break-inside: avoid; }
+              section, header { break-inside: avoid; }
+            </style>
+          </head><body>
+            <div class="print-container">${inner}</div>
+          </body></html>`;
+          const w = window.open('', '_blank', 'noopener,noreferrer');
+          if (w) {
+            w.document.open();
+            w.document.write(doc);
+            w.document.close();
+            w.focus();
+            setTimeout(() => { try { w.print(); } catch(_){} try { w.close(); } catch(_){} }, 500);
+          }
+        }, 50);
+      }, []);
+
+      const configValid = useMemo(() => (
+        [estimateNum, floorRateNum, breakpointRateNum, priceWeight].every(Number.isFinite)
+        && estimateNum > 0
+        && floorRateNum >= 0 && breakpointRateNum > 0
+        && floorRateNum < breakpointRateNum
+      ), [estimateNum, floorRateNum, breakpointRateNum, priceWeight]);
+
+      const comparisonRows = useMemo(() => {
+        // 1) 하한율 이상만 유효 후보로 인정 → 최저유효율 도출
+        const validRates = parties
+          .map(p => parseNumLoose(p.bidRate))
+          .filter(r => Number.isFinite(r) && r >= floorRateNum);
+        const minValidRate = validRates.length > 0 ? Math.min(...validRates) : NaN;
+        const lowestValidBid = Number.isFinite(estimateNum) && Number.isFinite(minValidRate) && estimateNum > 0
+          ? estimateNum * (minValidRate / 100)
+          : NaN;
+
+        // 2) 업체별 원점수 계산
+        const withRaw = parties.map(p => {
+          const rate = parseNumLoose(p.bidRate);
+          const bid = Number.isFinite(rate) && Number.isFinite(estimateNum) && estimateNum > 0
+            ? estimateNum * (rate / 100)
+            : NaN;
+          const raw = calculateHybridScoreRaw(
+            bid, lowestValidBid, estimateNum, priceWeight, floorRateNum, breakpointRateNum
+          );
+          let tag = '';
+          if (Number.isFinite(rate)) {
+            if (rate < floorRateNum) tag = '실격';
+            else if (rate < breakpointRateNum) tag = '경쟁';
+            else tag = '안전';
+          }
+          return { ...p, rate, bid, rawScore: raw, scoreTag: tag };
+        });
+
+        // 3) 모드별 최종 점수 산정
+        let finalScores = withRaw;
+        if (scoringMode === SCORING_MODES.NORMALIZE) {
+          const maxRaw = Math.max(
+            ...withRaw
+              .filter(x => Number.isFinite(x.rawScore) && x.rawScore > 0 && (x.rate ?? 0) >= floorRateNum)
+              .map(x => x.rawScore),
+            -Infinity
+          );
+          finalScores = withRaw.map(x => ({
+            ...x,
+            priceScore: (Number.isFinite(maxRaw) && maxRaw > 0 && Number.isFinite(x.rawScore))
+              ? Math.min(priceWeight * (x.rawScore / maxRaw), priceWeight)
+              : x.rawScore,
+            normalized: true,
+          }));
+        } else { // CAP_ALL
+          finalScores = withRaw.map(x => ({
+            ...x,
+            priceScore: Number.isFinite(x.rawScore) ? Math.min(x.rawScore, priceWeight) : x.rawScore,
+            normalized: false,
+          }));
+        }
+
+        const base = finalScores[0]?.priceScore;
+        return finalScores.map(p => ({
+          ...p,
+          isLowest: (Number.isFinite(p.bid) && Number.isFinite(lowestValidBid) && p.bid >= lowestValidBid - 1e-6 && p.bid <= lowestValidBid + 1e-6 && (p.rate ?? 0) >= floorRateNum),
+          scoreDiff: (Number.isFinite(base) && Number.isFinite(p.priceScore)) ? (p.priceScore - base) : NaN,
+        }));
+      }, [parties, estimateNum, priceWeight, floorRateNum, breakpointRateNum, scoringMode]);
+
+      const updateParty = (id, patch) => setParties(prev => prev.map(x => (x.id === id ? { ...x, ...patch } : x)));
+      const addParty = () => setParties(prev => [...prev, { id: genId(), name: `경쟁${prev.length}`, bidRate: "" }]);
+      const delParty = (id) => setParties(prev => prev.filter(x => x.id !== id));
+
+      // 엔터 키 포커스 이동 규칙
+      // 업체명 → (같은 행) 투찰율 → (다음 행) 업체명 → ...
+      const handleNameKeyDown = (idx, e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const next = document.querySelector(`input[data-field="party-rate"][data-idx="${idx}"]`);
+          if (next) {
+            next.focus();
+            if (typeof next.select === 'function') next.select();
+          }
+        }
+      };
+
+      return (
+        <div className="min-h-screen p-6">
+          <div className="mx-auto max-w-6xl space-y-6">
+            <header className="space-y-1 md:flex md:items-center md:justify-between">
+              <div className="flex-1">
+                <h1 className="text-xl font-semibold">협상계약 투찰 시뮬레이션 (협상계약 표준산식)</h1>
+                <p className="mt-1 text-sm text-black">정부 '협상에 의한 계약체결기준'의 표준 가격평점산식을 적용합니다.</p>
+              </div>
+              <div className="no-print mt-3 md:mt-0 flex items-center gap-2">
+                <button onClick={doPrint} className="inline-flex items-center gap-2 h-10 px-4 rounded-full bg-black text-white shadow hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-black/30">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M6 2h12v6H6V2zm10 12h2a2 2 0 0 0 2-2v-1a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v1a2 2 0 0 0 2 2h2v6h10v-6zM8 20h8v2H8v-2z"/></svg>
+                  출력
+                </button>
+              </div>
+            </header>
+
+            {/* 유효성 경고 배너 표시 제거(요청) */}
+
+            <section className="bg-white border rounded-lg p-4 space-y-4">
+              <h2 className="text-md font-semibold">1. 입찰 공고 기준값</h2>
+              <div className="flex flex-wrap gap-3 items-center">
+                <label className="flex flex-col gap-1 text-sm font-semibold text-black flex-[1_1_14rem] min-w-0">배점(기술:가격)
+                  <select className="mt-1 rounded-md border border-black h-10 px-3" value={ratio}
+                          onChange={e => setRatio(e.target.value)}>
+                    <option value="9:1">기술(90) : 가격(10)</option>
+                    <option value="8:2">기술(80) : 가격(20)</option>
+                    <option value="7:3">기술(70) : 가격(30)</option>
+                    <option value="6:4">기술(60) : 가격(40)</option>
+                    <option value="5:5">기술(50) : 가격(50)</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-sm flex-[1_1_14rem] min-w-0">예정가격(원)
+                  <input type="text" inputMode="numeric" placeholder="1,000,000,000" value={estimate}
+                         onChange={handleEstimateChange}
+                         className="mt-1 rounded-md border h-10 px-3 w-full" />
+                </label>
+                <label className="flex flex-col gap-1 text-sm flex-[1_1_14rem] min-w-0 print-hide">평가기준 분기점(%)
+                  <input type="number" value={80} disabled readOnly
+                         className="mt-1 rounded-md border h-10 px-3 bg-gray-100 text-gray-500 w-full" />
+                </label>
+                {/* 소수점 자릿수 입력은 숨김 (기본값 3 유지) */}
+                
+              </div>
+            </section>
+
+            <section className="bg-white border rounded-lg p-4 space-y-3">
+              <h2 className="text-md font-semibold">2. 업체 투찰율별 가격배점차 산정</h2>
+              <div className="overflow-x-auto">
+                <table className="min-w-full table-fixed text-sm border-t hide-col-6">
+                  <colgroup>
+                    <col className="w-[22%]" />
+                    <col className="w-[14%]" />
+                    <col className="w-[22%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[20%]" />
+                    <col className="w-[64px]" />
+                  </colgroup>
+                  <thead>
+                    <tr className="text-gray-700 bg-gray-50">
+                      <th className="p-1.5 md:p-2 text-center align-middle whitespace-nowrap">업체명</th>
+                      <th className="p-1.5 md:p-2 text-center align-middle whitespace-nowrap">투찰율(%)</th>
+                      <th className="p-1.5 md:p-2 text-center align-middle whitespace-nowrap">예상 입찰가(원)</th>
+                      <th className="p-1.5 md:p-2 text-center align-middle whitespace-nowrap">예상 가격점수(점)</th>
+                      <th className="p-1.5 md:p-2 text-center align-middle whitespace-nowrap">가격배점차</th>
+                      <th className="p-1.5 md:p-2 align-middle whitespace-nowrap text-center w-[64px] min-w-[64px] print-hide"><button onClick={addParty} className="no-print inline-flex items-center justify-center h-8 px-3 border text-xs bg-white rounded-md whitespace-nowrap leading-none min-w-[56px]">추가</button></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comparisonRows.map((p, idx) => (
+                      <tr key={p.id} className={`border-t ${idx === 0 ? 'bg-blue-50' : ''} hover:bg-gray-50`}>
+                        <td className="p-1.5 md:p-2 align-middle whitespace-nowrap text-center"><input name="party-name" lang="ko" autocapitalize="off" autocomplete="off" autocorrect="off" spellCheck={false} enterKeyHint="next" data-field="party-name" data-idx={idx} onKeyDown={e => handleNameKeyDown(idx, e)} onFocus={e => handlePartyNameFocus(idx, e)} onBlur={e => handlePartyNameBlur(idx, e)} onFocus={e => { const v=(e.target.value||'').trim(); if(idx>0 && v.startsWith('경쟁')) { updateParty(p.id, { name: '' }); requestAnimationFrame(()=>{ try{ e.target.select(); } catch(_){} }); } }} onBlur={e => { const v=(e.target.value||'').trim(); if(idx>0 && !v) { updateParty(p.id, { name: '경쟁' + idx }); } }} className="rounded-md border px-2 py-1 h-8 w-full bg-transparent text-center" value={p.name} onChange={e => updateParty(p.id, { name: e.target.value })} /></td>
+                        <td className="p-1.5 md:p-2 align-middle whitespace-nowrap text-center"><input data-field="party-rate" data-idx={idx} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); const next = document.querySelector('input[data-field="party-name"][data-idx="' + (idx + 1) + '"]'); if (next) { next.focus(); if (typeof next.select === 'function') next.select(); } } }} className="rounded-md border px-2 py-1 h-8 w-full text-center" placeholder="예: 80.123" value={p.bidRate} onChange={e => updateParty(p.id, { bidRate: e.target.value })} /></td>
+                        <td className="p-1.5 md:p-2 text-center align-middle font-mono tabular-nums whitespace-nowrap">{Number.isFinite(p.bid) ? Math.round(p.bid).toLocaleString() : '-'}</td>
+                        <td className="p-1.5 md:p-2 text-center align-middle font-mono tabular-nums font-semibold">
+                          <span className={p.scoreTag === '실격' ? 'text-red-600' : 'text-blue-800'}>{fmt(p.priceScore, roundDigits)}</span>
+                        </td>
+                        <td className="p-1.5 md:p-2 text-center align-middle font-mono tabular-nums whitespace-nowrap">
+                          {idx === 0 ? (
+                            <span className="text-gray-500 font-sans">기준</span>
+                          ) : (
+                            Number.isFinite(p.scoreDiff) ? (p.scoreDiff > 0 ? `+${fmt(p.scoreDiff, roundDigits)}` : fmt(p.scoreDiff, roundDigits)) : '-'
+                          )}
+                        </td>
+                        <td className="p-1.5 md:p-2 text-center align-middle whitespace-nowrap print-hide">{idx > 0 && <button onClick={() => delParty(p.id)} className="no-print rounded-md px-2 py-1 border text-xs bg-white">삭제</button>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* 테스트 패널 비표시 (요청에 따라 숨김) */}
+            {/* <TestsPanel /> */}
+
+            <section className="text-sm text-gray-700">
+              <h3 className="font-semibold mb-2">※ 계산기 사용법 및 주의사항</h3>
+              <ul className="list-disc pl-5 space-y-1">
+                <li><strong>선형 정규화 적용(중요):</strong> 본 계산기는 기본적으로 <em>선형 정규화</em>를 적용합니다.<br/>(1) 표준 산식으로 각 업체의 <em>원점수</em>를 계산한 뒤(캡 적용 전),<br/>(2) 유효 참가자 중 원점수의 최대값을 기준으로 모든 점수를 <code>최종점수 = W × (원점수 / 최대원점수)</code>로 스케일합니다. 이때 최저입찰금액업체(최대 원점수 보유자는 통상 최저유효가)가 항상 <strong>만점(W점)</strong>이 되며, 다른 업체는 그 비율만큼 점수가 산정됩니다. </li>
+              </ul>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    // === 간단 테스트 패널 ===
+    function TestsPanel() {
+      const [results, setResults] = React.useState([]);
+
+      useEffect(() => {
+        const E = 1000; // 예정가격
+        const W = 10;   // 배점
+        const floor = 70; // 하한율(%)
+        const brk = 80;   // 분기점(%)
+
+        // approx 비교
+        const approx = (a, b, eps = 1e-9) => {
+          if (Number.isNaN(a) && Number.isNaN(b)) return true;
+          return Math.abs(a - b) <= eps;
+        };
+
+        const cases = [
+          {
+            name: '① 분기점 이상, L=B',
+            bid: 800, // 0.8E
+            L: 800,
+            expected: 10.0, // W*(L/B) = 10
+          },
+          {
+            name: '① 분기점 이상, L=800, B=900',
+            bid: 900,
+            L: 800,
+            expected: 8.8888888889, // 10*(800/900)
+          },
+          {
+            name: '② 분기점 미만, L=600, B=700',
+            bid: 700,
+            L: 600,
+            expected: 9.5, // base 7.5 + bonus 2.0 (하한 70%)
+          },
+          {
+            name: '하한 미만 0점',
+            bid: 500,
+            L: 600,
+            expected: 0,
+          },
+          {
+            name: '유효성 위반(하한>=분기점) → NaN',
+            bid: 800,
+            L: 800,
+            override: { floor: 85, brk: 80 },
+            expected: NaN,
+          },
+          {
+            name: '최저유효가 없음 → NaN',
+            bid: 800,
+            L: NaN,
+            expected: NaN,
+          },
+          {
+            name: '경계 근처(B=799, L=750)',
+            bid: 799,
+            L: 750,
+            expected: 9.395, // base 9.375 + bonus 0.02 (하한 70%)
+          },
+          {
+            name: '보정 케이스: 하한=70%, 분기점=80%, L=B=0.7E → 10으로 캡',
+            bid: 700,
+            L: 700,
+            override: { floor: 70, brk: 80 },
+            expected: 10.0,
+          },
+          // 추가 테스트 케이스 (기존 테스트는 변경하지 않음)
+          {
+            name: '예정가격 0 → NaN',
+            bid: 700,
+            L: 700,
+            override: { E: 0 },
+            expected: NaN,
+          },
+          {
+            name: '분기점 바로 위(B=0.8001E, L=0.7E)',
+            bid: 800.1,
+            L: 700,
+            expected: 10 * (700 / 800.1),
+          },
+        ];
+
+        const run = cases.map((tc) => {
+          const floorRate = tc.override?.floor ?? floor;
+          const brkRate = tc.override?.brk ?? brk;
+          const Eoverride = tc.override?.E;
+          const B = tc.bid; // 투찰가
+          const L = tc.L;   // 최저유효입찰가
+          const actual = calculateHybridScore(B, L, (Eoverride ?? E), W, floorRate, brkRate);
+          const pass = approx(actual, tc.expected, 1e-6);
+          return {
+            name: tc.name,
+            expected: tc.expected,
+            actual,
+            pass,
+          };
+        });
+
+        setResults(run);
+      }, []);
+
+      const allPass = results.length > 0 && results.every(r => r.pass);
+
+      return (
+        <section className="bg-white border rounded-lg p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-md font-semibold">(내부 테스트 비표시)</h2>
+            <span className={`text-xs px-2 py-1 rounded-full ${allPass ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{allPass ? '전체 성공' : '실패 케이스 있음'}</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm border-t">
+              <thead>
+                <tr className="text-gray-700 bg-gray-50">
+                  <th className="p-2 text-left">테스트 이름</th>
+                  <th className="p-2 text-right">기대값</th>
+                  <th className="p-2 text-right">실제값</th>
+                  <th className="p-2 text-center">결과</th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((r, idx) => (
+                  <tr key={idx} className="border-t">
+                    <td className="p-2">{r.name}</td>
+                    <td className="p-1.5 md:p-2 text-right align-middle font-mono tabular-nums whitespace-nowrap">{String(r.expected)}</td>
+                    <td className="p-1.5 md:p-2 text-right align-middle font-mono tabular-nums whitespace-nowrap">{String(Math.round((r.actual + Number.EPSILON) * 1e9) / 1e9)}</td>
+                    <td className="p-2 text-center">
+                      <span className={`text-xs px-2 py-1 rounded-full ${r.pass ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>{r.pass ? 'PASS' : 'FAIL'}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      );
+    }
+
+    // === 마운트: React 18(createRoot) 또는 React 17(render) 호환 ===
+    function mountApp() {
+      const container = document.getElementById('root');
+      if (!container) return;
+      try {
+        if (ReactDOM && typeof ReactDOM.createRoot === 'function') {
+          const root = ReactDOM.createRoot(container);
+          root.render(<BidSimulator />);
+        } else if (ReactDOM && typeof ReactDOM.render === 'function') {
+          ReactDOM.render(<BidSimulator />, container);
+        } else {
+          throw new Error('ReactDOM API를 찾을 수 없습니다. (createRoot/render 미지원)');
+        }
+      } catch (err) {
+        const box = document.getElementById('global-error-box');
+        if (box) {
+          box.classList.remove('hidden');
+          box.textContent = `실행 오류: ${err && err.message ? err.message : err}`;
+        }
+        console.error(err);
+      }
+    }
+
+    // 전역 에러 핸들러(크로스 오리진 오류 시에도 메시지만 표시)
+    window.addEventListener('error', (e) => {
+      const box = document.getElementById('global-error-box');
+      if (box) {
+        box.classList.remove('hidden');
+        box.textContent = `전역 오류: ${e?.message || 'Script error.'}`;
+      }
+    });
+
+    // DOM 준비 후 마운트
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', mountApp);
+    } else {
+      mountApp();
+    }
+  </script>
+</body>
+</html>
