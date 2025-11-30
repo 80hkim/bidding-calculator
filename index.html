@@ -30,9 +30,19 @@
       .hide-col-6 td:nth-child(6) { display: none !important; }
       header, section { break-inside: avoid; }
       
-    }
-    
-      
+      /* 인쇄 시 입력창/버튼 스타일 정리 */
+      input, select, button { 
+        color: #000 !important; 
+        border: none !important; 
+        background: transparent !important; 
+        padding: 0 !important; 
+        box-shadow: none !important;
+        appearance: none !important;
+        -webkit-appearance: none !important;
+        -moz-appearance: none !important;
+      }
+      /* select 화살표 숨김 */
+      select::-ms-expand { display: none; }
     }
   </style>
 </head>
@@ -179,44 +189,9 @@
       const floorRateNum = useMemo(() => parseNumLoose(floorRate), [floorRate]);
       const breakpointRateNum = useMemo(() => parseNumLoose(breakpointRate), [breakpointRate]);
 
-      // 인쇄: 일부 환경에서 window.print()가 막히는 경우 새 창으로 복사 후 인쇄
+      // 인쇄: window.print() 직접 호출
       const doPrint = React.useCallback(() => {
-        // 1차 시도: 현재 창에서 직접 인쇄
-        try { window.focus(); window.print(); } catch (_) {}
-        // 2차 폴백: 새 창으로 간이 스타일과 함께 렌더 후 인쇄
-        setTimeout(() => {
-          const host = document.querySelector('#root');
-          const inner = host ? host.innerHTML : '';
-          const doc = `<!doctype html><html lang="ko"><head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>인쇄</title>
-            <style>
-              @page { size: A4 portrait; margin: 12mm; }
-              html, body { font-family: 'KoPub Dotum','KoPubWorldDotum','돋움',Dotum,'Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif; color:#000; }
-              .no-print { display: none !important; }
-              input, select, button { color:#000 !important; border:none !important; background:transparent !important; padding:0 !important; box-shadow:none !important; }
-              h1{ font-size:18px; margin:0 0 8px; }
-              h2{ font-size:15px; margin:16px 0 8px; }
-              p,li,span,div{ font-size:12px; }
-              table{ width:100%; border-collapse:collapse; font-size:12px; }
-              thead th{ background:#f5f5f5; }
-              table,th,td{ border:2px solid #000; padding:6px; text-align:center; }
-              tr, td, th { page-break-inside: avoid; }
-              section, header { break-inside: avoid; }
-            </style>
-          </head><body>
-            <div class="print-container">${inner}</div>
-          </body></html>`;
-          const w = window.open('', '_blank', 'noopener,noreferrer');
-          if (w) {
-            w.document.open();
-            w.document.write(doc);
-            w.document.close();
-            w.focus();
-            setTimeout(() => { try { w.print(); } catch(_){} try { w.close(); } catch(_){} }, 500);
-          }
-        }, 50);
+        window.print();
       }, []);
 
       const configValid = useMemo(() => (
